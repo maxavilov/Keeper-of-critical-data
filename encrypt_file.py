@@ -36,6 +36,7 @@ parser.add_argument("-temp", "--template", default="", help="Template file")
 parser.add_argument("-c", "--chunk_size", type=int, default=32768, help="Chunk size")
 parser.add_argument("-p", "--prefix", default="", help="Chunk file name prefix (default empty string)")
 parser.add_argument("-f", "--force", action="store_true", help="Force update destination files")
+parser.add_argument("-v", "--verify", help="PEM file for integrity test")
 parser.add_argument("key", help="Public key PEM file")
 parser.add_argument("file", help="Source file for encryption")
 parser.add_argument("destination", help="Destination directory")
@@ -43,7 +44,7 @@ args = parser.parse_args()
 
 script_dir_path = os.path.dirname(os.path.realpath(__file__))
 
-# Read software source files
+# Read software source files and PEM file if needed
 try:
     with open(os.path.join(script_dir_path, "tails_python.sh"), 'r') as file:
         tails_python = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -51,6 +52,16 @@ try:
         rsa_from_passphrase = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     with open(os.path.join(script_dir_path, "decrypt_file.py"), 'r') as file:
         decrypt_file = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if args.verify:
+        with open(os.path.join(script_dir_path, "integrity_test.py"), 'r') as file:
+            integrity_test = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        with open(args.verify, 'r') as file:
+            test_pem = file.read()
+        hide_integrity_test = ""
+    else:
+        hide_integrity_test = "display:none;"
+        integrity_test = ""
+        test_pem = ""
 except IOError:
     sys.exit("Can't read software source files")
 
@@ -149,7 +160,10 @@ try:
                                                    links="{links}", data=data,
                                                    tails_python=tails_python,
                                                    rsa_from_passphrase=rsa_from_passphrase,
-                                                   decrypt_file=decrypt_file))
+                                                   decrypt_file=decrypt_file,
+                                                   hide_integrity_test=hide_integrity_test,
+                                                   integrity_test=integrity_test,
+                                                   test_pem=test_pem))
             except IOError:
                 sys.exit("Error write to temporary file!")
             current_chunk_idx += 1
