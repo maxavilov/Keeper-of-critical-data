@@ -12,19 +12,20 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+from __future__ import print_function
+
 import argparse
 import os
-import sys
 import struct
+import sys
 from base64 import b64decode
 from getpass import getpass
 from lxml.html import fromstring
 
 from Crypto.Cipher import AES
-from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Hash import SHA256
 
-from rsa_from_passphrase import RsaFromPassphrase
+import diffie_hellman
 
 
 def get_str_between_markers(src_str, begin, end):
@@ -32,33 +33,18 @@ def get_str_between_markers(src_str, begin, end):
     end_idx = src_str.index(end, begin_idx)
     return src_str[begin_idx:end_idx].replace("\n", "")
 
-if sys.version_info.major < 3:
-    sys.exit("Your Python interpreter is too old. Must use python 3 or greater.")
-
-parser = argparse.ArgumentParser(description="Decrypt files by RSA public key generated from passphrase")
+parser = argparse.ArgumentParser(description="Decrypt files by key generated from passphrase and Diffie-Hellman params")
 parser.add_argument("-i", "--index", default="index.html", help="Index (first) file name (default index.html)")
 parser.add_argument("-p", "--prefix", default="", help="Chunk file name prefix (default empty string)")
-parser.add_argument("-b", "--bits", type=int, default=0, help="Number of RSA key bits")
 parser.add_argument("source", help="Source directory that contain files for decrypt")
 parser.add_argument("destination", help="Destination file name")
 args = parser.parse_args()
 
 passphrase = getpass("Enter passphrase:")  # Get passphrase
+print("Generate secret...")
+secret = diffie_hellman.passphrase_to_secret(passphrase)
 
-# Get RSA key bits
-if args.bits == 0:
-    try:
-        bits = int(input("Number of RSA key bits:"))
-    except ValueError:
-        sys.exit("Bits must be integer no smaller than 1024, and must be a multiple of 256!")
-else:
-    bits = args.bits
-if bits < 1024 or bits % 256 != 0:
-    sys.exit("Wrong bits value! It must be a multiple of 256, and no smaller than 1024.")
-
-cipher_for_key = PKCS1_OAEP.new(RsaFromPassphrase(passphrase, bits).get_rsa_key())
-
-# Decrypt
+print("Decrypt...")
 try:
     with open(args.destination, 'wb') as destination_file:
         current_chunk_idx = 1
@@ -89,22 +75,23 @@ try:
                 sys.exit("Chunk file (%s) has wrong content (data not present)!" % source_file_name)
             try:
                 key_data_str = get_str_between_markers(encrypted_data_and_key_tag.text,
-                                                       "-------- BEGIN KEY --------",
-                                                       "--------  END KEY  --------")
+                                                       "-------- BEGIN DH+IV+PADDING LEN --------",
+                                                       "--------  END DH+IV+PADDING LEN  --------")
                 if not key_data_str:
                     raise ValueError("Empty key data!")
             except ValueError:
                 sys.exit("Chunk file (%s) has wrong content (invalid key data)!" % source_file_name)
             try:
-                key_data = cipher_for_key.decrypt(b64decode(key_data_str))
+                key_data = b64decode(key_data_str)
+                shared_key, _ = diffie_hellman.get_shared_key_and_packed_public(secret, key_data)
+                key_src = SHA256.new()
+                key_src.update(shared_key)
+                chunk_key = key_src.digest()  # AES 256 key
+                chunk_iv = key_data[-17:-1]  # Extract chunk AES IV
+                cipher = AES.new(chunk_key, AES.MODE_CBC, chunk_iv)
+                padding_len = struct.unpack('B', key_data[-1:])[0]  # Extract padding bytes count
             except ValueError:
-                sys.exit("Chunk file (%s) has wrong content (can't decrypt key data)!" % source_file_name)
-            if len(key_data) != 32 + 16 + 1:
-                sys.exit("Chunk file (%s) has wrong content (invalid key data length)!" % source_file_name)
-            chunk_key = key_data[0:32]  # Extract chunk AES 256 key
-            chunk_iv = key_data[32:32 + 16]  # Extract chunk AES IV
-            cipher = AES.new(chunk_key, AES.MODE_CBC, chunk_iv)
-            padding_len = struct.unpack('B', key_data[32 + 16:32 + 16 + 1])[0]  # Extract padding bytes count
+                sys.exit("Chunk file (%s) has wrong content (can't extract key data)!" % source_file_name)
             try:
                 data_str = get_str_between_markers(encrypted_data_and_key_tag.text,
                                                    "-------- BEGIN DATA --------",

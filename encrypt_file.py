@@ -13,31 +13,37 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 from __future__ import print_function
-import sys
-import os
+
 import argparse
 import base64
+import os
 import struct
+import sys
 from array import array
 from datetime import datetime
-from lxml.html import fromstring
 
-from Crypto.PublicKey import RSA
-from Crypto.Hash import SHA256
 from Crypto import Random
 from Crypto.Cipher import AES
-from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Hash import SHA256
+from lxml.html import fromstring
+
+import diffie_hellman
 
 
-parser = argparse.ArgumentParser(description="Encrypt the file by RSA public key and output result to html files.")
+def get_str_between_markers(src_str, begin, end):
+    begin_idx = src_str.index(begin) + len(begin)
+    end_idx = src_str.index(end, begin_idx)
+    return src_str[begin_idx:end_idx].replace("\n", "")
+
+
+parser = argparse.ArgumentParser(description="Encrypt the file and output result to html files.")
 parser.add_argument("-t", "--title", default="Encrypted file content", help="Title for destination pages")
 parser.add_argument("-i", "--index", default="index.html", help="Index file name (default index.html)")
 parser.add_argument("-temp", "--template", default="", help="Template file")
 parser.add_argument("-c", "--chunk_size", type=int, default=32768, help="Chunk size")
 parser.add_argument("-p", "--prefix", default="", help="Chunk file name prefix (default empty string)")
 parser.add_argument("-f", "--force", action="store_true", help="Force update destination files")
-parser.add_argument("-v", "--verify", help="PEM file for integrity test")
-parser.add_argument("key", help="Public key PEM file")
+parser.add_argument("key", help="Diffie-Hellman public key file")
 parser.add_argument("file", help="Source file for encryption")
 parser.add_argument("destination", help="Destination directory")
 args = parser.parse_args()
@@ -48,35 +54,23 @@ script_dir_path = os.path.dirname(os.path.realpath(__file__))
 try:
     with open(os.path.join(script_dir_path, "tails_python.sh"), 'r') as file:
         tails_python = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    with open(os.path.join(script_dir_path, "rsa_from_passphrase.py"), 'r') as file:
-        rsa_from_passphrase = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    with open(os.path.join(script_dir_path, "diffie_hellman.py"), 'r') as file:
+        diffie_hellman_src = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     with open(os.path.join(script_dir_path, "decrypt_file.py"), 'r') as file:
         decrypt_file = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    if args.verify:
-        with open(os.path.join(script_dir_path, "integrity_test.py"), 'r') as file:
-            integrity_test = file.read().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        with open(args.verify, 'r') as file:
-            test_pem = file.read()
-        hide_integrity_test = ""
-    else:
-        hide_integrity_test = "display:none;"
-        integrity_test = ""
-        test_pem = ""
 except IOError:
     sys.exit("Can't read software source files")
 
 timestamp = datetime.utcnow().isoformat()
 
-# Read RSA public key
+# Read Diffie-Hellman public key
 try:
     with open(args.key, 'r') as file:
-        key_data = file.read()
+        key_data = base64.b64decode(get_str_between_markers(file.read(),
+                                                            "-------- BEGIN PUBLIC DIFFIE-HELLMAN AND PARAMS --------",
+                                                            "--------  END PUBLIC DIFFIE-HELLMAN AND PARAMS  --------"))
 except IOError:
     sys.exit("Can't read public key file")
-try:
-    public_key = RSA.importKey(key_data)
-except ValueError:
-    sys.exit("Invalid public key file content!")
 
 # Check if source file has changes
 if not args.force:
@@ -132,25 +126,25 @@ try:
             if padding_len == 16:
                 padding_len = 0
             chunk += bytes(array('B', [i for i in range(0, padding_len)]).tostring())
-            chunk_key = Random.new().read(32)  # AES 256 key for chunk
-            chunk_iv = Random.new().read(16)   # IV for AES encryption
+            shared_key, packed_public = diffie_hellman.get_shared_key_and_packed_public(Random.new().read(32), key_data)
+            key_src = SHA256.new()
+            key_src.update(shared_key)
+            chunk_key = key_src.digest()  # AES 256 key for chunk
+            chunk_iv = Random.new().read(16)  # IV for AES encryption
             cipher = AES.new(chunk_key, AES.MODE_CBC, chunk_iv)
             encrypted = base64.b64encode(cipher.encrypt(chunk)).decode()
-            cipher_for_key = PKCS1_OAEP.new(public_key)
-            encrypted_key_iv = base64.b64encode(cipher_for_key
-                                                .encrypt(chunk_key + chunk_iv
-                                                         + struct.pack('B', padding_len))).decode()
+            public_key_iv = base64.b64encode(packed_public + chunk_iv + struct.pack('B', padding_len)).decode()
             # Out data to temporary file
             if current_chunk_idx == 1:
                 result_file_name = os.path.join(args.destination, "." + args.index + ".tmpenc")
             else:
                 result_file_name = os.path.join(args.destination, "." + args.prefix + str(current_chunk_idx)
                                                 + ".html.tmpenc")
-            data = "-------- BEGIN KEY --------\n"
-            for line in [encrypted_key_iv[i:i+80] for i in range(0, len(encrypted_key_iv), 80)]:
+            data = "-------- BEGIN DH+IV+PADDING LEN --------\n"
+            for line in [public_key_iv[i:i + 80] for i in range(0, len(public_key_iv), 80)]:
                 data += line + "\n"
-            data += "--------  END KEY  --------\n-------- BEGIN DATA --------\n"
-            for line in [encrypted[i:i+80] for i in range(0, len(encrypted), 80)]:
+            data += "--------  END DH+IV+PADDING LEN  --------\n-------- BEGIN DATA --------\n"
+            for line in [encrypted[i:i + 80] for i in range(0, len(encrypted), 80)]:
                 data += line + "\n"
             data += "--------  END DATA  --------\n"
             try:
@@ -159,11 +153,8 @@ try:
                                                    timestamp=timestamp, digest="{digest}",
                                                    links="{links}", data=data,
                                                    tails_python=tails_python,
-                                                   rsa_from_passphrase=rsa_from_passphrase,
-                                                   decrypt_file=decrypt_file,
-                                                   hide_integrity_test=hide_integrity_test,
-                                                   integrity_test=integrity_test,
-                                                   test_pem=test_pem))
+                                                   diffie_hellman=diffie_hellman_src,
+                                                   decrypt_file=decrypt_file))
             except IOError:
                 sys.exit("Error write to temporary file!")
             current_chunk_idx += 1
@@ -197,7 +188,5 @@ try:
         except OSError:
             sys.exit("Can't delete temporary file!")
     print('Operation successful complete!')
-except OSError:
-    sys.exit("Invalid source file!")
-except IOError:
+except (OSError, IOError):
     sys.exit("Can't read from source file!")

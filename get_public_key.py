@@ -12,18 +12,20 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-import sys
+from __future__ import print_function
+
 import argparse
+import sys
+from base64 import b64encode
 from getpass import getpass
-from rsa_from_passphrase import RsaFromPassphrase
 
-if sys.version_info.major < 3:
-    sys.exit("Your Python interpreter is too old. Must use python 3 or greater.")
+import diffie_hellman
 
-parser = argparse.ArgumentParser(description="Generate RSA key from passphrase and output it in PEM format.")
-parser.add_argument("-b", "--bits", type=int, default=0, help="Number of RSA key bits")
-parser.add_argument("-f", "--file", help="File name for output public key in PEM format")
-parser.add_argument("-p", "--passphrase", help="Passphrase. Warning: Using a password on the command line interface can be insecure.")
+parser = argparse.ArgumentParser(
+    description="Generate Diffie-Hellman public key from passphrase and output it to the file.")
+parser.add_argument("-f", "--file", help="File name for output public key")
+parser.add_argument("-p", "--passphrase",
+                    help="Passphrase. Warning: Using a password on the command line interface can be insecure.")
 args = parser.parse_args()
 
 if args.passphrase is None:
@@ -35,27 +37,20 @@ else:
     print("Warning: Using a password on the command line interface can be insecure.")
     passphrase = args.passphrase
 
-if args.bits == 0:
-    try:
-        bits = int(input("Number of RSA key bits [4096]:"))
-    except ValueError:
-        bits = 4096
-else:
-    bits = args.bits
-
-if bits < 1024 or bits % 256 != 0:
-    sys.exit("Wrong bits value! It must be a multiple of 256, and no smaller than 1024.")
-
-print("Generate %d bits RSA key..." % bits)
-RSA_key = RsaFromPassphrase(passphrase, bits)
+print("Generate Diffie-Hellman public key...")
+public_key = b64encode(diffie_hellman.get_packed_public_from_passphrase(passphrase)).decode()
+public_key_for_out = "-------- BEGIN PUBLIC DIFFIE-HELLMAN AND PARAMS --------\n"
+for line in [public_key[i:i + 80] for i in range(0, len(public_key), 80)]:
+    public_key_for_out += line + "\n"
+public_key_for_out += "--------  END PUBLIC DIFFIE-HELLMAN AND PARAMS  --------"
 
 if args.file is None:
     print()
-    print(RSA_key.get_public_pem())
+    print(public_key_for_out)
 else:
     try:
         with open(args.file, 'w') as file:
-            file.write(RSA_key.get_public_pem())
+            file.write(public_key_for_out)
     except IOError:
         sys.exit("Can't output public key to file - IOError!")
 print()
