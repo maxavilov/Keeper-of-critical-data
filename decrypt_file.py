@@ -23,7 +23,7 @@ from getpass import getpass
 from lxml.html import fromstring
 
 from Crypto.Cipher import AES
-from Crypto.Hash import SHA256
+from Crypto.Hash import SHA256, SHA384
 
 import diffie_hellman
 
@@ -75,8 +75,8 @@ try:
                 sys.exit("Chunk file (%s) has wrong content (data not present)!" % source_file_name)
             try:
                 key_data_str = get_str_between_markers(encrypted_data_and_key_tag.text,
-                                                       "-------- BEGIN DH+IV+PADDING LEN --------",
-                                                       "--------  END DH+IV+PADDING LEN  --------")
+                                                       "-------- BEGIN DH PUBLIC --------",
+                                                       "--------  END DH PUBLIC  --------")
                 if not key_data_str:
                     raise ValueError("Empty key data!")
             except ValueError:
@@ -84,12 +84,12 @@ try:
             try:
                 key_data = b64decode(key_data_str)
                 shared_key, _ = diffie_hellman.get_shared_key_and_packed_public(secret, key_data)
-                key_src = SHA256.new()
+                key_src = SHA384.new()
                 key_src.update(shared_key)
-                chunk_key = key_src.digest()  # AES 256 key
-                chunk_iv = key_data[-17:-1]  # Extract chunk AES IV
-                cipher = AES.new(chunk_key, AES.MODE_CBC, chunk_iv)
-                padding_len = struct.unpack('B', key_data[-1:])[0]  # Extract padding bytes count
+                key_and_iv = key_src.digest()
+                chunk_key = key_and_iv[:32]  # AES 256 key
+                chunk_iv = key_and_iv[-16:]  # Extract chunk AES IV
+                cipher = AES.new(chunk_key, AES.MODE_CFB, chunk_iv)
             except ValueError:
                 sys.exit("Chunk file (%s) has wrong content (can't extract key data)!" % source_file_name)
             try:
@@ -101,8 +101,6 @@ try:
             except ValueError:
                 sys.exit("Chunk file (%s) has wrong content (invalid data)!" % source_file_name)
             data = cipher.decrypt(b64decode(data_str))
-            if padding_len != 0:
-                data = data[:len(data) - padding_len]
             destination_file.write(data)  # Write decrypted data to destination file
             file_hash.update(data)
             # If current digest equal the file digest, the end of file found

@@ -24,7 +24,7 @@ from datetime import datetime
 
 from Crypto import Random
 from Crypto.Cipher import AES
-from Crypto.Hash import SHA256
+from Crypto.Hash import SHA256, SHA384
 from lxml.html import fromstring
 
 import diffie_hellman
@@ -122,28 +122,25 @@ try:
             if len(chunk) == 0:
                 break
             file_hash.update(chunk)
-            padding_len = 16 - len(chunk) % 16  # padding for AES
-            if padding_len == 16:
-                padding_len = 0
-            chunk += bytes(array('B', [i for i in range(0, padding_len)]).tostring())
             shared_key, packed_public = diffie_hellman.get_shared_key_and_packed_public(Random.new().read(32), key_data)
-            key_src = SHA256.new()
+            key_src = SHA384.new()
             key_src.update(shared_key)
-            chunk_key = key_src.digest()  # AES 256 key for chunk
-            chunk_iv = Random.new().read(16)  # IV for AES encryption
-            cipher = AES.new(chunk_key, AES.MODE_CBC, chunk_iv)
+            key_and_iv = key_src.digest()
+            chunk_key = key_and_iv[:32]  # AES 256 key for chunk
+            chunk_iv = key_and_iv[-16:]  # IV for AES encryption
+            cipher = AES.new(chunk_key, AES.MODE_CFB, chunk_iv)
             encrypted = base64.b64encode(cipher.encrypt(chunk)).decode()
-            public_key_iv = base64.b64encode(packed_public + chunk_iv + struct.pack('B', padding_len)).decode()
+            public_key_b64 = base64.b64encode(packed_public).decode()
             # Out data to temporary file
             if current_chunk_idx == 1:
                 result_file_name = os.path.join(args.destination, "." + args.index + ".tmpenc")
             else:
                 result_file_name = os.path.join(args.destination, "." + args.prefix + str(current_chunk_idx)
                                                 + ".html.tmpenc")
-            data = "-------- BEGIN DH+IV+PADDING LEN --------\n"
-            for line in [public_key_iv[i:i + 80] for i in range(0, len(public_key_iv), 80)]:
+            data = "-------- BEGIN DH PUBLIC --------\n"
+            for line in [public_key_b64[i:i + 80] for i in range(0, len(public_key_b64), 80)]:
                 data += line + "\n"
-            data += "--------  END DH+IV+PADDING LEN  --------\n-------- BEGIN DATA --------\n"
+            data += "--------  END DH PUBLIC  --------\n-------- BEGIN DATA --------\n"
             for line in [encrypted[i:i + 80] for i in range(0, len(encrypted), 80)]:
                 data += line + "\n"
             data += "--------  END DATA  --------\n"
