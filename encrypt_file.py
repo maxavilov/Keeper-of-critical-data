@@ -17,9 +17,7 @@ from __future__ import print_function
 import argparse
 import base64
 import os
-import struct
 import sys
-from array import array
 from datetime import datetime
 
 from Crypto import Random
